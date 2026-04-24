@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: cashflow
+      POSTGRES_PASSWORD: cashflow
+      POSTGRES_DB: cashflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cashflow -d cashflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - infra
+      - full
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: cashflow
+      RABBITMQ_DEFAULT_PASS: cashflow
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - infra
+      - full
+
+  ledger-api:
+    build:
+      context: ..
+      dockerfile: src/Services/Ledger/CashFlow.Ledger.Api/Dockerfile
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__UserName: cashflow
+      RabbitMq__Password: cashflow
+      RabbitMq__ExchangeName: cashflow.events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "5101:8080"
+    profiles:
+      - full
+
+  consolidation-api:
+    build:
+      context: ..
+      dockerfile: src/Services/DailyConsolidation/CashFlow.DailyConsolidation.Api/Dockerfile
+    environment:
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow
+      RabbitMq__HostName: rabbitmq
+      RabbitMq__UserName: cashflow
+      RabbitMq__Password: cashflow
+      RabbitMq__ExchangeName: cashflow.events
+      RabbitMq__QueueName: cashflow.consolidation.transactions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "5102:8080"
+    profiles:
+      - full
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: src/ApiGateway/CashFlow.ApiGateway/Dockerfile
+    environment:
+      Gateway__ApiKey: local-dev-api-key
+      ReverseProxy__Clusters__ledger__Destinations__d1__Address: http://ledger-api:8080/
+      ReverseProxy__Clusters__consolidation__Destinations__d1__Address: http://consolidation-api:8080/
+    depends_on:
+      ledger-api:
+        condition: service_started
+      consolidation-api:
+        condition: service_started
+    ports:
+      - "5080:8080"
+    profiles:
+      - full
+
+volumes:
+  postgres_data: {}
